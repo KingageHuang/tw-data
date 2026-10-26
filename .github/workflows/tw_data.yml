@@ -1,0 +1,45 @@
+name: tw-data
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "回補起始日 (YYYY-MM-DD)"
+        default: "2023-01-01"
+  schedule:
+    - cron: "0 11 * * 1-5"   # UTC 11:00 = 台北 19:00，週一到週五
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tw-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy
+      - name: 下載（可續傳，最多 320 分鐘）
+        run: |
+          START="${{ github.event.inputs.start }}"
+          [ -z "$START" ] && START=$(date -u -d "10 days ago" +%F)
+          END=$(TZ=Asia/Taipei date +%F)
+          python backtest_tw.py download --start "$START" --end "$END" --data data --max-minutes 320
+      - name: 解析成 CSV
+        run: python backtest_tw.py build --data data
+      - name: 提交資料
+        run: |
+          git config user.name "tw-data-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add data/*.csv data/seen_dates.txt
+          git diff --cached --quiet && echo "沒有新資料" && exit 0
+          git commit -m "update data $(date -u +%F)"
+          git pull --rebase -q
+          git push
