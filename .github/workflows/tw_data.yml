@@ -34,6 +34,12 @@ jobs:
           python backtest_tw.py download --start "$START" --end "$END" --data data --max-minutes 320
       - name: 解析成 CSV
         run: python backtest_tw.py build --data data
+      - name: 回補夜盤／費半（只在 data/macro.csv 不存在時跑一次）
+        continue-on-error: true
+        run: |
+          if [ ! -f data/macro.csv ]; then
+            python macro_fetch.py --start 2023-01-01 --out data/macro.csv
+          fi
       - name: 提交資料
         run: |
           git config user.name "tw-data-bot"
