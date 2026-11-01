@@ -30,7 +30,7 @@ def fetch_sox(start, end):
     import json
     j = json.loads(http(url))["chart"]["result"][0]
     ts = j["timestamp"]; cl = j["indicators"]["quote"][0]["close"]
-    s = pd.DataFrame({"us_date": [dt.datetime.utcfromtimestamp(t).strftime("%Y-%m-%d") for t in ts], "close": cl}).dropna()
+    s = pd.DataFrame({"us_date": [dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%d") for t in ts], "close": cl}).dropna()
     s["pct"] = s.close.pct_change() * 100
     return s.reset_index(drop=True)
 
@@ -46,8 +46,14 @@ def fetch_tx_month(a, b):
 def parse_night(df):
     """從 TX 下載表取每日盤後(夜盤)主力月份：收盤、漲跌%。回傳 label_date, close, pct"""
     df = df.rename(columns=lambda c: c.strip())
-    df = df[df["交易時段"].str.strip() == "盤後"].copy()
-    df = df[~df["到期月份(週別)"].str.contains("/|W", na=False)]      # 排除價差單與週選
+    sc = [c for c in df.columns if "時段" in c][0]
+    mc = [c for c in df.columns if "到期月份" in c][0]
+    if not getattr(parse_night, "_shown", False):
+        parse_night._shown = True
+        print("DEBUG 欄位:", list(df.columns)); print("DEBUG 交易時段值:", df[sc].astype(str).str.strip().unique().tolist())
+        print("DEBUG 前3列:\n", df.head(3).to_string())
+    df = df[~df[sc].astype(str).str.contains("一般")].copy()                 # 非日盤＝盤後
+    df = df[~df[mc].astype(str).str.contains("/|W", na=False)]              # 排除價差單與週選
     df["vol"] = pd.to_numeric(df["成交量"].str.replace(",", ""), errors="coerce")
     df["close"] = pd.to_numeric(df["收盤價"].str.replace(",", ""), errors="coerce")
     df["pct"] = pd.to_numeric(df["漲跌%"].str.replace("%", "").str.replace(",", ""), errors="coerce")
@@ -62,7 +68,10 @@ def calibrate(night, tdates):
     for close, D in ANCHORS:
         r = night[(night.close - close).abs() < 0.5]
         if len(r): hit[D] = r.label.iloc[0]
-    if not hit: raise SystemExit("錨點對不上：無法判斷夜盤日期標籤，請把輸出貼給 Claude，不要硬用。")
+    if not hit:
+        print("DEBUG 夜盤資料筆數:", len(night)); print("DEBUG 最後8筆:\n", night.tail(8).to_string())
+        print("DEBUG 離錨點最近的5筆:\n", night.iloc[(night.close - ANCHORS[0][0]).abs().argsort()[:5]].to_string())
+        raise SystemExit("錨點對不上：無法判斷夜盤日期標籤，請把 DEBUG 輸出貼給 Claude，不要硬用。")
     D, L = next(iter(hit.items()))
     mode = "same" if L == D else "prev"
     print("日期標籤判斷：", mode, "（錨點", hit, "）")
