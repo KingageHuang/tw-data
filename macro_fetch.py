@@ -39,13 +39,15 @@ def fetch_tx_month(a, b):
         "queryStartDate": a.strftime("%Y/%m/%d"), "queryEndDate": b.strftime("%Y/%m/%d")}).encode()
     raw = http("https://www.taifex.com.tw/cht/3/dlFutDataDown", data=body)
     for enc in ("big5", "utf-8-sig", "cp950"):
-        try: return pd.read_csv(io.StringIO(raw.decode(enc)), dtype=str)
+        try: return pd.read_csv(io.StringIO(raw.decode(enc)), dtype=str, index_col=False)
         except Exception: continue
     raise RuntimeError("無法解析期交所 CSV")
 
 def parse_night(df):
     """從 TX 下載表取每日盤後(夜盤)主力月份：收盤、漲跌%。回傳 label_date, close, pct"""
     df = df.rename(columns=lambda c: c.strip())
+    if not df["交易日期"].astype(str).str.match(r"\d{4}/\d{1,2}/\d{1,2}").all():   # 資料列尾多一個逗號會讓欄位整體右移
+        df = df.reset_index(); df.columns = list(df.columns[:1]) + list(df.columns[1:])
     sc = [c for c in df.columns if "時段" in c][0]
     mc = [c for c in df.columns if "到期月份" in c][0]
     if not getattr(parse_night, "_shown", False):
@@ -107,7 +109,8 @@ def selftest():
           "2026/10/29,TX,202611,46000,46100,45900,45926,-643,-1.38%,50000,盤後\n" \
           "2026/10/29,TX,202611/202612,0,0,0,10,1,1%,100,盤後\n" \
           "2026/10/29,TX,202611,46500,46600,46400,46569,10,0.02%,90000,一般\n"
-    n = parse_night(pd.read_csv(io.StringIO(csv), dtype=str))
+    csv2 = "\n".join([csv.split("\n")[0]] + [l + "," for l in csv.split("\n")[1:] if l])   # 模擬資料列尾多逗號
+    n = parse_night(pd.read_csv(io.StringIO(csv2), dtype=str, index_col=False))
     assert len(n) == 1 and n.close.iloc[0] == 45926 and abs(n.pct.iloc[0] + 1.38) < 1e-9
     print("selftest OK（只驗證解析；網路抓取未在此測）")
 
