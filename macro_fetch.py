@@ -79,8 +79,8 @@ def calibrate(night, tdates):
     print("日期標籤判斷：", mode, "（錨點", hit, "）")
     return mode
 
-def build(start, end, out, index_csv="data/index.csv"):
-    idx = pd.read_csv(index_csv); tdates = sorted(idx.date.astype(str))
+def build(start, end, out, index_csv="data/index.csv", extra_dates=(), write=True):
+    idx = pd.read_csv(index_csv); tdates = sorted(set(idx.date.astype(str)) | set(extra_dates))
     sox = fetch_sox(start, end)
     frames = []; cur = dt.date.fromisoformat(start); last = dt.date.fromisoformat(end)
     while cur <= last:
@@ -101,8 +101,38 @@ def build(start, end, out, index_csv="data/index.csv"):
         rows.append({"date": D, "night_pct": round(float(n.pct.iloc[0]), 2) if len(n) else "",
                      "sox_prev_pct": round(float(s.pct.iloc[0]), 2) if len(s) and pd.notna(s.pct.iloc[0]) else "",
                      "fut_short_chg": ""})
-    m = pd.DataFrame(rows); os.makedirs(os.path.dirname(out) or ".", exist_ok=True); m.to_csv(out, index=False)
+    m = pd.DataFrame(rows)
+    if not write: return m
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True); m.to_csv(out, index=False)
     print("寫出", out, len(m), "列；夜盤缺", int((m.night_pct == "").sum()), "；費半缺", int((m.sox_prev_pct == "").sum()))
+
+def merge_macro(old, new, valid_dates):
+    """把 new 併進 old：同日期只覆蓋 new 有值的欄位；old 中不在 valid_dates 的列（例如先前補的「今天」遇到休市）會被移除。"""
+    cols = ["date", "night_pct", "sox_prev_pct", "fut_short_chg"]
+    o = old.copy() if old is not None else pd.DataFrame(columns=cols)
+    for c in cols:
+        if c not in o.columns: o[c] = ""
+    o = o[cols].astype(object); o["date"] = o["date"].astype(str); o = o.set_index("date")
+    for r in new.itertuples(index=False):
+        d = str(r.date)
+        if d not in o.index: o.loc[d] = ["", "", ""]
+        for c in ("night_pct", "sox_prev_pct"):
+            v = getattr(r, c)
+            if v != "" and pd.notna(v): o.at[d, c] = v
+    o = o[o.index.isin(set(valid_dates))].sort_index().reset_index()
+    return o[cols]
+
+def update(out, index_csv="data/index.csv", start="2026-10-25"):
+    """每天跑：只抓近期（含錨點 10/30、11/2 以便判斷日期標籤），併進現有 macro.csv。
+    盤前（台北）若今天是平日且尚未在 index.csv，會多補一列「今天」（夜盤＝昨晚盤後、費半＝美股昨收）。"""
+    today = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=8)).date()
+    idx = pd.read_csv(index_csv); tdates = sorted(idx.date.astype(str))
+    extra = [today.isoformat()] if today.weekday() < 5 and today.isoformat() > tdates[-1] else []
+    new = build(start, today.isoformat(), out, index_csv, extra_dates=extra, write=False)
+    old = pd.read_csv(out, dtype=str, keep_default_na=False) if os.path.exists(out) else None
+    m = merge_macro(old, new, set(tdates) | set(extra))
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True); m.to_csv(out, index=False)
+    print("更新", out, "共", len(m), "列；最後 3 列：\n", m.tail(3).to_string())
 
 def selftest():
     csv = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,交易時段\n" \
@@ -112,10 +142,18 @@ def selftest():
     csv2 = "\n".join([csv.split("\n")[0]] + [l + "," for l in csv.split("\n")[1:] if l])   # 模擬資料列尾多逗號
     n = parse_night(pd.read_csv(io.StringIO(csv2), dtype=str, index_col=False))
     assert len(n) == 1 and n.close.iloc[0] == 45926 and abs(n.pct.iloc[0] + 1.38) < 1e-9
-    print("selftest OK（只驗證解析；網路抓取未在此測）")
+    old = pd.DataFrame({"date": ["2026-10-30", "2026-11-03"], "night_pct": ["-1.38", "-0.5"], "sox_prev_pct": ["-1.42", "2.63"], "fut_short_chg": ["", ""]})
+    new = pd.DataFrame({"date": ["2026-11-03", "2026-11-04", "2026-11-07"], "night_pct": [0.98, 0.5, ""], "sox_prev_pct": ["", -3.13, ""]})
+    m = merge_macro(old, new, {"2026-10-30", "2026-11-03", "2026-11-04"})
+    assert list(m.date) == ["2026-10-30", "2026-11-03", "2026-11-04"], m
+    r3 = m[m.date == "2026-11-03"].iloc[0]; assert float(r3.night_pct) == 0.98 and float(r3.sox_prev_pct) == 2.63   # 新值覆蓋、舊值不被空白蓋掉
+    assert float(m[m.date == "2026-11-04"].iloc[0].sox_prev_pct) == -3.13
+    print("selftest OK（解析＋合併邏輯；網路抓取未在此測）")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(); ap.add_argument("--start", default="2023-01-01")
     ap.add_argument("--end", default=dt.date.today().isoformat()); ap.add_argument("--out", default="data/macro.csv")
-    ap.add_argument("--selftest", action="store_true"); a = ap.parse_args()
-    selftest() if a.selftest else build(a.start, a.end, a.out)
+    ap.add_argument("--selftest", action="store_true"); ap.add_argument("--update", action="store_true"); a = ap.parse_args()
+    if a.selftest: selftest()
+    elif a.update: update(a.out)
+    else: build(a.start, a.end, a.out)
