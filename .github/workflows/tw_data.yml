@@ -7,7 +7,10 @@ on:
         description: "回補起始日 (YYYY-MM-DD)"
         default: "2023-01-01"
   schedule:
-    - cron: "0 11 * * 1-5"   # UTC 11:00 = 台北 19:00，週一到週五
+    - cron: "17 10 * * 1-5"  # UTC 10:17 = 台北 18:17（週一到週五）
+    - cron: "43 11 * * 1-5"  # UTC 11:43 = 台北 19:43
+    - cron: "23 13 * * 1-5"  # UTC 13:23 = 台北 21:23（補跑，GitHub 排程常延遲）
+    - cron: "37 21 * * 0-4"  # UTC 21:37 = 台北 05:37（週一到週五早上補跑）
 
 permissions:
   contents: write
