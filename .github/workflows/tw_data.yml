@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       start:
-        description: "回補起始日 (YYYY-MM-DD)"
-        default: "2023-01-01"
+        description: "回補起始日 (YYYY-MM-DD)；留空＝只補最近 10 天（收盤後手動補跑請留空）"
+        default: ""
   schedule:
-    - cron: "17 10 * * 1-5"  # UTC 10:17 = 台北 18:17（週一到週五）
-    - cron: "43 11 * * 1-5"  # UTC 11:43 = 台北 19:43
+    - cron: "35 6 * * 1-5"   # UTC 06:35 = 台北 14:35（收盤後第一輪；法人未公布時不寫入當日，見「當日資料完整性檢查」）
+    - cron: "5 8 * * 1-5"    # UTC 08:05 = 台北 16:05（補三大法人）
+    - cron: "17 10 * * 1-5"  # UTC 10:17 = 台北 18:17
     - cron: "23 13 * * 1-5"  # UTC 13:23 = 台北 21:23（補跑，GitHub 排程常延遲）
-    - cron: "37 21 * * 0-4"  # UTC 21:37 = 台北 05:37（週一到週五早上補跑）
+    - cron: "37 21 * * 0-4"  # UTC 21:37 = 台北 05:37（週一到週五早上補跑；只有這一輪更新夜盤／費半）
 
 permissions:
   contents: write
@@ -35,9 +36,37 @@ jobs:
           [ -z "$START" ] && START=$(date -u -d "10 days ago" +%F)
           END=$(TZ=Asia/Taipei date +%F)
           python backtest_tw.py download --start "$START" --end "$END" --data data --max-minutes 320
+      - name: 當日資料完整性檢查（收盤行情、個股法人、法人金額三者都已公布才解析當日）
+        run: |
+          python - <<'PY'
+          import json, os, datetime as dt
+          today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y%m%d")
+          raw = "data/raw"
+          kinds = ("mi", "t86", "bfi")
+          paths = {k: os.path.join(raw, f"{k}_{today}.json") for k in kinds}
+          def ok(p):
+              if not os.path.exists(p):
+                  return False
+              try:
+                  js = json.load(open(p, encoding="utf-8"))
+              except Exception:
+                  return False
+              if str(js.get("stat", "")).upper() != "OK":
+                  return False
+              has = bool(js.get("data")) or any(t.get("data") for t in js.get("tables", []) if isinstance(t, dict))
+              return has
+          res = {k: ok(p) for k, p in paths.items()}
+          print("當日", today, "完整性：", res)
+          if not all(res.values()):
+              for p in paths.values():
+                  if os.path.exists(p):
+                      os.remove(p)
+              print("今日資料尚未全部公布（或今日休市）：不解析當日，等下一輪；避免寫入沒有法人欄位的半成品列")
+          PY
       - name: 解析成 CSV
         run: python backtest_tw.py build --data data
-      - name: 夜盤／費半（首次全量回補；之後每次只更新近期並合併）
+      - name: 夜盤／費半（只在台北 05:37 那輪與手動執行時更新，避免美股收盤前寫入未完成的值）
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '37 21 * * 0-4' }}
         continue-on-error: true
         run: |
           if [ ! -f data/macro.csv ]; then
